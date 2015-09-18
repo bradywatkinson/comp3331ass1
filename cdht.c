@@ -40,7 +40,6 @@ struct peermsg {
 	char msgtype;
 	char sender_id;
 	char successor_id;
-	int  seqnum;
 };
 
 typedef struct peermsg *peermsg;
@@ -50,43 +49,9 @@ char successor_first;	// the active peers current first successor
 char successor_second;	// the active peers current second successor
 char status;	// the active peers current message status
 
-int seqcount1;
-int seqresp1;
-int seqcount2;
-int seqresp2;
+int seqcount[2];
 
 struct timeval tv;
-
-// void *replace_first_sucessor() {
-
-// 	printf("-->Successor one(1) has no response. Begin replacing\n");
-
-// 	int sd;
-// 	struct sockaddr_in sendaddr;
-
-// 	peermsg reqmsg = malloc(sizeof(struct peermsg));
-
-// 	sd=socket(AF_INET,SOCK_DGRAM,0);
-// 	if(sd<0) {
-// 		perror("cannot open socket ");
-// 		exit(1);
-// 	}
-
-// 	bzero(&sendaddr,sizeof(sendaddr));
-// 	sendaddr.sin_family = AF_INET;
-// 	sendaddr.sin_addr.s_addr=inet_addr("127.0.0.1");
-// 	sendaddr.sin_port=htons(SERVER_PORT+successor_second);
-
-// 	reqmsg->msgtype = SUCC_DIED_REQUEST;
-
-// 	sendto(sd,reqmsg,sizeof(struct peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
-
-// 	close(sd);
-
-// 	free(reqmsg);
-
-// 	return NULL;
-// }
 
 void *replace_sucessor () {
 
@@ -99,7 +64,6 @@ void *replace_sucessor () {
 	reqmsg->msgtype = SUCC_DIED_REQUEST;
 	reqmsg->sender_id = myid;
 	reqmsg->successor_id = 0;
-	reqmsg->seqnum = 0;
 
 	sd=socket(AF_INET,SOCK_DGRAM,0);
 	if(sd<0) {
@@ -111,8 +75,6 @@ void *replace_sucessor () {
 	sendaddr.sin_family = AF_INET;
 	sendaddr.sin_addr.s_addr=inet_addr("127.0.0.1");
 	sendaddr.sin_port=htons(SERVER_PORT+successor_first);
-
-
 
 	sendto(sd,reqmsg,sizeof(struct peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
@@ -132,7 +94,6 @@ void *successor_first_ping (void *argv)
 	reqmsg->msgtype = REQUEST;
 	reqmsg->sender_id = myid;
 	reqmsg->successor_id = 0;
-	reqmsg->seqnum = 0;
 
 	sd=socket(AF_INET,SOCK_DGRAM,0);
 	if(sd<0) {
@@ -141,21 +102,20 @@ void *successor_first_ping (void *argv)
 	}
 
 	while (TRUE) {
-		
-		reqmsg->seqnum = ++seqcount1;
 
+		++seqcount[0];
+		
 		bzero(&sendaddr,sizeof(sendaddr));
 		sendaddr.sin_family = AF_INET;
 		sendaddr.sin_addr.s_addr=inet_addr("127.0.0.1");
 		sendaddr.sin_port=htons(SERVER_PORT+successor_first);
 
-		//printf("Sending request %d %d to port %d\n",reqmsg->msgtype, reqmsg->sender_id, SERVER_PORT+successor_first);
 		printf("Sending request to port %d\n", SERVER_PORT+successor_first);
 
 		sendto(sd,reqmsg,sizeof(struct peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
 		// if we have sent a certain amount of packets more than we have received
-		if (seqcount1 - LOST_PACKET_THRESHOLD > seqresp1 && successor_second != -1) {
+		if (seqcount[0] > LOST_PACKET_THRESHOLD && successor_second != -1) {
 			successor_first = successor_second;
 			successor_second = -1;
 			status = DEAD_SUCCESSOR;
@@ -178,7 +138,6 @@ void *successor_second_ping (void *argv)
 	reqmsg->msgtype = REQUEST;
 	reqmsg->sender_id = myid;
 	reqmsg->successor_id = 0;
-	reqmsg->seqnum = 0;
 
 	sd=socket(AF_INET,SOCK_DGRAM,0);
 	if(sd<0) {
@@ -193,7 +152,7 @@ void *successor_second_ping (void *argv)
 			usleep(200000);
 		}
 		
-		reqmsg->seqnum = ++seqcount2;
+		++seqcount[1];
 
 		bzero(&sendaddr,sizeof(sendaddr));
 		sendaddr.sin_family = AF_INET;
@@ -206,7 +165,7 @@ void *successor_second_ping (void *argv)
 		sendto(sd,reqmsg,sizeof(struct peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
 		// if we have sent a certain amount of packets more than we have received
-		if (seqcount2 - LOST_PACKET_THRESHOLD > seqresp2) {
+		if (seqcount[1] > LOST_PACKET_THRESHOLD) {
 			successor_second = -1;
 			status = DEAD_SUCCESSOR;
 		}
@@ -238,7 +197,6 @@ void *receiver (void *argv)
 	respmsg->msgtype = 0;
 	respmsg->sender_id = myid;
 	respmsg->successor_id = 0;
-	respmsg->seqnum = 0;
 
 
 	while (TRUE) {
@@ -255,7 +213,7 @@ void *receiver (void *argv)
 		//printf("A message was received: %d %d\n", ((peermsg)recvline)->msgtype, ((peermsg)recvline)->sender_id);
 		if (((peermsg)recvline)->msgtype == RESPONSE) { 
 			printf("A ping response message was received from Peer %d\n",((peermsg)recvline)->sender_id);
-			seqresp1 = ((peermsg)recvline)->seqnum;
+			seqcount[!(((peermsg)recvline)->sender_id==successor_first)] = 0;
 		} else if (((peermsg)recvline)->msgtype == REQUEST) {
 			printf("A ping request message was received from Peer %d\n",((peermsg)recvline)->sender_id);
 
@@ -290,6 +248,7 @@ void *receiver (void *argv)
 			printf("Successor Died Response received from %d. Updating successor_second\n",((peermsg)recvline)->sender_id);
 			successor_second = ((peermsg)recvline)->successor_id;
 			status = NORMAL;
+			seqcount[!(((peermsg)recvline)->sender_id==successor_first)] = 0;
 		}
 	}
 }
@@ -305,10 +264,8 @@ int main (int argc, char *argv[])
 	myid = atoi(argv[1]);
 	successor_first = atoi(argv[2]);
 	successor_second = atoi(argv[3]);
-	seqcount1 = 256;
-	seqresp1 = 256;
-	seqcount2 = 65536;
-	seqresp2 = 65536;
+	seqcount[0] = 0;
+	seqcount[1] = 0;
 
 	status = NORMAL;
 
