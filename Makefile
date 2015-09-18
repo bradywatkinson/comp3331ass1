@@ -1,2 +1,2 @@
 cdht: cdht.c
-	gcc -Wall -Werror cdht.c -o cdht
+	gcc -Wall -Werror cdht.c -o cdht -lpthread
