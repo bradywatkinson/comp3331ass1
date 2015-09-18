@@ -53,7 +53,21 @@ int seqcount[2];
 
 struct timeval tv;
 
-void *replace_sucessor () {
+void *input ()
+{
+	char buffer[100];
+	while (TRUE) {
+		scanf("%s",buffer);
+		if (strcmp(buffer,"quit") == 0) {
+			printf("Quit initiated\n");
+			exit(1);
+		}
+	}
+	return NULL;
+}
+
+void *replace_sucessor ()
+{
 
 	printf("-->Successor has no response. Begin replacing\n");
 
@@ -276,11 +290,14 @@ int main (int argc, char *argv[])
 	pthread_t pthSF;
 	pthread_t pthSS;
 	pthread_t pthR;	
+	pthread_t pthI;
 	pthread_create(&pthSF, NULL, successor_first_ping, NULL);
 	usleep(1000);
 	pthread_create(&pthSS, NULL, successor_second_ping, NULL);
 	usleep(1000);
 	pthread_create(&pthR, NULL, receiver, NULL);
+	usleep(1000);
+	pthread_create(&pthI, NULL, input, NULL);
 
 	while(TRUE);
 }
