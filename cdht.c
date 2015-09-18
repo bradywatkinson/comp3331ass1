@@ -30,20 +30,24 @@
 #define SUCC_DIED_REQUEST 10
 #define SUCC_DIED_RESPONSE 20
 #define FILE_REQUEST 30
+#define FILE_RESPONSE 40
+#define DEPARTING_PEER 50
 
 // Statuses
 #define NORMAL 0
 #define DEAD_SUCCESSOR 10
+#define DEPARTING 20
 
 #define TRUE 1
 #define FALSE 0
 
-#define DEBUG 1
+#define DEBUG 0
 
 struct peermsg {
 	char msgtype;
 	char sender_id;
 	short msg_info;
+	short msg_info2;
 };
 
 typedef struct peermsg *peermsg;
@@ -70,7 +74,10 @@ void *input ()
 		sscanf(buffer,"%s %d",command,&num);
 		if (strcmp(command,"quit") == 0) {
 			if (DEBUG) printf("Quit initiated\n");
-			exit(1);
+			//printf("Peer %d will now depart from the network\n", myid);
+			status = DEPARTING;
+
+			//exit(1);
 		} else if (strcmp(command,"request") ==0) {
 			printf("File request message for %d has been sent to my successor.\n",num);
 
@@ -96,10 +103,7 @@ void *input ()
 			sendto(sd,reqmsg,sizeof(struct peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
 			close(sd);
-
 			free(reqmsg);
-
-
 		}
 	}
 	return NULL;
@@ -147,7 +151,7 @@ void *send_file_response (void *arg)
 	struct sockaddr_in sendaddr;
 
 	peermsg reqmsg = malloc(sizeof(struct peermsg));
-	reqmsg->msgtype = FILE_REQUEST;
+	reqmsg->msgtype = FILE_RESPONSE;
 	reqmsg->sender_id = myid;
 	reqmsg->msg_info = tmp[0];
 
@@ -160,7 +164,7 @@ void *send_file_response (void *arg)
 	bzero(&sendaddr,sizeof(sendaddr));
 	sendaddr.sin_family = AF_INET;
 	sendaddr.sin_addr.s_addr=inet_addr("127.0.0.1");
-	sendaddr.sin_port=htons(SERVER_PORT+successor_first);
+	sendaddr.sin_port=htons(SERVER_PORT+tmp[1]);
 
 	sendto(sd,reqmsg,sizeof(struct peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
@@ -174,15 +178,15 @@ void *send_file_response (void *arg)
 void *send_file_request (void *arg)
 {
 	short *tmp = (short*)arg;
-	if (DEBUG) printf("-->Forwarding a file request for file %d\n",*tmp);
+	if (DEBUG) printf("-->Forwarding a file request for file %d\n",tmp[0]);
 
 	int sd;
 	struct sockaddr_in sendaddr;
 
 	peermsg reqmsg = malloc(sizeof(struct peermsg));
 	reqmsg->msgtype = FILE_REQUEST;
-	reqmsg->sender_id = myid;
-	reqmsg->msg_info = *tmp;
+	reqmsg->sender_id = tmp[1];
+	reqmsg->msg_info = tmp[0];
 
 	sd=socket(AF_INET,SOCK_DGRAM,0);
 	if(sd<0) {
@@ -220,7 +224,7 @@ void *successor_first_ping ()
 		exit(1);
 	}
 
-	while (TRUE) {
+	while (status != DEPARTING) {
 
 		++seqcount[0];
 		
@@ -229,7 +233,7 @@ void *successor_first_ping ()
 		sendaddr.sin_addr.s_addr=inet_addr("127.0.0.1");
 		sendaddr.sin_port=htons(SERVER_PORT+successor_first);
 
-		printf("Sending request to port %d\n", SERVER_PORT+successor_first);
+		if (DEBUG) printf("Sending request to port %d\n", SERVER_PORT+successor_first);
 
 		sendto(sd,reqmsg,sizeof(struct peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
@@ -264,7 +268,7 @@ void *successor_second_ping ()
 		exit(1);
 	}
 
-	while (TRUE) {
+	while (status != DEPARTING) {
 
 		while (status == DEAD_SUCCESSOR) {
 			pthread_create(&pth, NULL, replace_sucessor, NULL);
@@ -279,7 +283,7 @@ void *successor_second_ping ()
 		sendaddr.sin_port=htons(SERVER_PORT+successor_second);
 
 		//printf("Sending request %d %d to port %d\n",reqmsg->msgtype, reqmsg->sender_id, SERVER_PORT+successor_first);
-		printf("Sending request to port %d\n", SERVER_PORT+successor_second);
+		if (DEBUG) printf("Sending request to port %d\n", SERVER_PORT+successor_second);
 
 		sendto(sd,reqmsg,sizeof(struct peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
@@ -318,7 +322,7 @@ void *receiver (void *argv)
 	respmsg->msg_info = 0;
 
 
-	while (TRUE) {
+	while (status != DEPARTING) {
 
 		bzero(&myaddr,sizeof(myaddr));
 		myaddr.sin_family = AF_INET;
@@ -331,9 +335,12 @@ void *receiver (void *argv)
 		recvfrom(sd,recvline,MAX_MSG,0,(struct sockaddr *)&recvaddr,&len);
 		//printf("A message was received: %d %d\n", ((peermsg)recvline)->msgtype, ((peermsg)recvline)->sender_id);
 		if (((peermsg)recvline)->msgtype == RESPONSE) { 
+
 			printf("A ping response message was received from Peer %d\n",((peermsg)recvline)->sender_id);
 			seqcount[!(((peermsg)recvline)->sender_id==successor_first)] = 0;
+
 		} else if (((peermsg)recvline)->msgtype == REQUEST) {
+
 			printf("A ping request message was received from Peer %d\n",((peermsg)recvline)->sender_id);
 
 			bzero(&sendaddr,sizeof(sendaddr));
@@ -343,13 +350,13 @@ void *receiver (void *argv)
 
 			respmsg->msgtype = RESPONSE;
 
-			printf("Sending response to port %d\n",SERVER_PORT+((peermsg)recvline)->sender_id);
+			if (DEBUG) printf("Sending response to port %d\n",SERVER_PORT+((peermsg)recvline)->sender_id);
 
 			sendto(sd,respmsg,4,0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
 		} else if (((peermsg)recvline)->msgtype == SUCC_DIED_REQUEST) {
 
-			printf("Successor Died Request received from %d."
+			if (DEBUG) printf("Successor Died Request received from %d."
 					" Sending first succcessor: %d\n",((peermsg)recvline)->sender_id,successor_first);
 
 			bzero(&sendaddr,sizeof(sendaddr));
@@ -360,11 +367,11 @@ void *receiver (void *argv)
 			respmsg->msgtype = SUCC_DIED_RESPONSE;
 			respmsg->msg_info = successor_first;
 
-			sendto(sd,respmsg,4,0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
+			sendto(sd,respmsg,sizeof(peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
 		} else if (((peermsg)recvline)->msgtype == SUCC_DIED_RESPONSE) {
 
-			printf("Successor Died Response received from %d. Updating successor_second\n",((peermsg)recvline)->sender_id);
+			if (DEBUG) printf("Successor Died Response received from %d. Updating successor_second\n",((peermsg)recvline)->sender_id);
 			successor_second = ((peermsg)recvline)->msg_info;
 			status = NORMAL;
 			seqcount[!(((peermsg)recvline)->sender_id==successor_first)] = 0;
@@ -387,13 +394,77 @@ void *receiver (void *argv)
 			// else i don't have the file; forward the message			
 			} else {
 				printf("\tFile 2012 is not stored here.\nFile request message has been forwarded to my successor\n");
-				short *tmp = malloc(sizeof(short));
-				*tmp = ((peermsg)recvline)->msg_info;
+				short *tmp = malloc(sizeof(short)*2);
+				tmp[0] = ((peermsg)recvline)->msg_info;
+				tmp[1] = ((peermsg)recvline)->sender_id;
 				pthread_t pth;
 				pthread_create(&pth, NULL, send_file_request, tmp);
 			}
+		} else if (((peermsg)recvline)->msgtype == FILE_RESPONSE) {
+			
+			printf("Received a response message from peer %d, which has the file %d.\n"
+					,((peermsg)recvline)->sender_id,((peermsg)recvline)->msg_info);
+
+		} else if (((peermsg)recvline)->msgtype == DEPARTING_PEER) {
+
+			// case 1: my first successor has died
+			if (((peermsg)recvline)->sender_id == successor_first) {
+				successor_first = successor_second;
+				successor_second = ((peermsg)recvline)->msg_info2;
+			} else {
+				successor_second = ((peermsg)recvline)->msg_info;
+			}
+			printf("Peer %d will depart from the network\n",((peermsg)recvline)->sender_id);
+			printf("My first successor is now peer %d.\n",successor_first);
+			printf("My second successor is now peer %d.\n",successor_second);
+
 		}
 	}
+
+	int count = 0;
+	int curr = -1;
+
+	// wait for two distinct responses
+	while (count<2) {
+
+		printf("test\n");
+
+		bzero(&myaddr,sizeof(myaddr));
+		myaddr.sin_family = AF_INET;
+		myaddr.sin_addr.s_addr=inet_addr("127.0.0.1");
+		myaddr.sin_port=htons(SERVER_PORT+myid);
+		bind(sd,(struct sockaddr *)&myaddr,sizeof(myaddr));
+
+		socklen_t len = sizeof(recvaddr);
+
+		recvfrom(sd,recvline,MAX_MSG,0,(struct sockaddr *)&recvaddr,&len);
+
+		// found a unique predecessor
+		if (((peermsg)recvline)->msgtype == REQUEST && ((peermsg)recvline)->sender_id != curr) {
+
+			curr = ((peermsg)recvline)->sender_id;
+
+			bzero(&sendaddr,sizeof(sendaddr));
+			sendaddr.sin_family = AF_INET;
+			sendaddr.sin_addr.s_addr=inet_addr("127.0.0.1");
+			sendaddr.sin_port=htons(SERVER_PORT+((peermsg)recvline)->sender_id);
+
+			respmsg->msgtype = DEPARTING_PEER;
+			respmsg->sender_id = myid;
+			respmsg->msg_info = successor_first;
+			respmsg->msg_info2 = successor_second;
+
+
+			if (DEBUG) printf("Sending response to port %d\n",SERVER_PORT+((peermsg)recvline)->sender_id);
+
+			sendto(sd,respmsg,sizeof(peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
+
+			++count;
+		}
+	}
+	exit(1);
+
+	return NULL;
 }
 
 int main (int argc, char *argv[])
