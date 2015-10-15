@@ -81,20 +81,22 @@ void *input ()
 		} else if (strcmp(command,"request") ==0) {
 			printf("File request message for %d has been sent to my successor.\n",num);
 
-			int sd;
-			struct sockaddr_in sendaddr;
-
+			// create message
 			peermsg reqmsg = malloc(sizeof(struct peermsg));
 			reqmsg->msgtype = FILE_REQUEST;
 			reqmsg->sender_id = myid;
 			reqmsg->msg_info = num;
 
+			// open a free socket
+			int sd;
 			sd=socket(AF_INET,SOCK_DGRAM,0);
 			if(sd<0) {
 				perror("cannot open socket ");
 				exit(1);
 			}
 
+			// create datagram
+			struct sockaddr_in sendaddr;
 			bzero(&sendaddr,sizeof(sendaddr));
 			sendaddr.sin_family = AF_INET;
 			sendaddr.sin_addr.s_addr=inet_addr("127.0.0.1");
@@ -180,20 +182,24 @@ void *send_file_request (void *arg)
 	short *tmp = (short*)arg;
 	if (DEBUG) printf("-->Forwarding a file request for file %d\n",tmp[0]);
 
-	int sd;
-	struct sockaddr_in sendaddr;
 
+	
+	// create a new message
 	peermsg reqmsg = malloc(sizeof(struct peermsg));
 	reqmsg->msgtype = FILE_REQUEST;
 	reqmsg->sender_id = tmp[1];
 	reqmsg->msg_info = tmp[0];
 
+	// open a free socket
+	int sd;
 	sd=socket(AF_INET,SOCK_DGRAM,0);
 	if(sd<0) {
 		perror("cannot open socket ");
 		exit(1);
 	}
 
+	// create the packet
+	struct sockaddr_in sendaddr;
 	bzero(&sendaddr,sizeof(sendaddr));
 	sendaddr.sin_family = AF_INET;
 	sendaddr.sin_addr.s_addr=inet_addr("127.0.0.1");
@@ -242,6 +248,8 @@ void *successor_first_ping ()
 			successor_first = successor_second;
 			successor_second = -1;
 			status = DEAD_SUCCESSOR;
+			printf("Peer %d is no longer alive.\n",successor_first);
+			printf("My first successor is now peer %d.\n",successor_second);
 		}
 		
 		usleep(REQUEST_PERIOD);
@@ -289,8 +297,10 @@ void *successor_second_ping ()
 
 		// if we have sent a certain amount of packets more than we have received
 		if (seqcount[1] > LOST_PACKET_THRESHOLD) {
+			printf("Peer %d is no longer alive.\n",successor_second);
 			successor_second = -1;
 			status = DEAD_SUCCESSOR;
+			printf("My first successor is now peer %d.\n",successor_first);
 		}
 		
 		usleep(REQUEST_PERIOD);
@@ -372,17 +382,19 @@ void *receiver (void *argv)
 		} else if (((peermsg)recvline)->msgtype == SUCC_DIED_RESPONSE) {
 
 			if (DEBUG) printf("Successor Died Response received from %d. Updating successor_second\n",((peermsg)recvline)->sender_id);
+			printf("My second successor is now peer %d.\n",((peermsg)recvline)->msg_info);
 			successor_second = ((peermsg)recvline)->msg_info;
 			status = NORMAL;
 			seqcount[!(((peermsg)recvline)->sender_id==successor_first)] = 0;
+			
 		} else if (((peermsg)recvline)->msgtype == FILE_REQUEST) {
 
 			// if the hash of the requested file is between myid and my first successors id
 			// OR I am the last peer in the chain and the hash is bigger than me
 			// I have the file: send the response
 			if (( myid > successor_first && (((peermsg)recvline)->msg_info+1)%256 > myid )
-					|| ( (((peermsg)recvline)->msg_info+1)%256 > myid && (((peermsg)recvline)->msg_info+1)%256 < successor_first )) {
-				printf("\tFile %d is here.\nA response message, destined for peer %D, has been sent.\n",
+					|| ( (((peermsg)recvline)->msg_info+1)%256 >= myid && (((peermsg)recvline)->msg_info+1)%256 < successor_first )) {
+				printf("\tFile %d is here.\nA response message, destined for peer %d, has been sent.\n",
 					((peermsg)recvline)->msg_info,((peermsg)recvline)->sender_id);
 
 				short *tmp = malloc(sizeof(short)*2);
@@ -393,13 +405,14 @@ void *receiver (void *argv)
 
 			// else i don't have the file; forward the message			
 			} else {
-				printf("\tFile 2012 is not stored here.\nFile request message has been forwarded to my successor\n");
+				printf("\tFile %d is not stored here.\nFile request message has been forwarded to my successor\n",((peermsg)recvline)->msg_info);
 				short *tmp = malloc(sizeof(short)*2);
 				tmp[0] = ((peermsg)recvline)->msg_info;
 				tmp[1] = ((peermsg)recvline)->sender_id;
 				pthread_t pth;
 				pthread_create(&pth, NULL, send_file_request, tmp);
 			}
+			
 		} else if (((peermsg)recvline)->msgtype == FILE_RESPONSE) {
 			
 			printf("Received a response message from peer %d, which has the file %d.\n"
@@ -407,9 +420,11 @@ void *receiver (void *argv)
 
 		} else if (((peermsg)recvline)->msgtype == DEPARTING_PEER) {
 
+			printf("Received departing peer message: first 1; %d second; %d.\n",((peermsg)recvline)->msg_info,((peermsg)recvline)->msg_info2);
+
 			// case 1: my first successor has died
 			if (((peermsg)recvline)->sender_id == successor_first) {
-				successor_first = successor_second;
+				successor_first = ((peermsg)recvline)->msg_info;
 				successor_second = ((peermsg)recvline)->msg_info2;
 			} else {
 				successor_second = ((peermsg)recvline)->msg_info;
@@ -426,8 +441,6 @@ void *receiver (void *argv)
 
 	// wait for two distinct responses
 	while (count<2) {
-
-		printf("test\n");
 
 		bzero(&myaddr,sizeof(myaddr));
 		myaddr.sin_family = AF_INET;
@@ -455,9 +468,8 @@ void *receiver (void *argv)
 			respmsg->msg_info2 = successor_second;
 
 
-			if (DEBUG) printf("Sending response to port %d\n",SERVER_PORT+((peermsg)recvline)->sender_id);
-
-			sendto(sd,respmsg,sizeof(peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
+			printf("Sending response to port %d: first; %d second; %d\n",SERVER_PORT+((peermsg)recvline)->sender_id, successor_first, successor_second);
+			sendto(sd,respmsg,sizeof(struct peermsg),0,(struct sockaddr *)&sendaddr,sizeof(sendaddr));
 
 			++count;
 		}
